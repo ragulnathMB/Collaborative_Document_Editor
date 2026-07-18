@@ -3,8 +3,15 @@ import { prisma } from "../db/prismaClient";
 export async function createDocument(
   workspaceId: string,
   ownerId: string,
-  title: string
+  title: string,
+  memberIds: string[]
 ) {
+  // Everyone currently in the workspace gets edit access to a new document
+  // by default (the creator gets OWNER, everyone else gets EDITOR). This
+  // makes documents visible in workspace-mates' document lists immediately
+  // instead of requiring a separate manual /share call per document.
+  const otherMemberIds = memberIds.filter((id) => id !== ownerId);
+
   return prisma.document.create({
     data: {
       workspaceId,
@@ -13,7 +20,10 @@ export async function createDocument(
       content: "",
       version: 0,
       permissions: {
-        create: { userId: ownerId, role: "OWNER" },
+        create: [
+          { userId: ownerId, role: "OWNER" },
+          ...otherMemberIds.map((userId) => ({ userId, role: "EDITOR" as const })),
+        ],
       },
     },
   });

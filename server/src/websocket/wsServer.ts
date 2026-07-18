@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import url from "url";
 import { handleConnection, registerBroadcaster } from "./wsHandlers";
+import { presenceManager } from "../presence/presenceManager";
 
 interface RoomEntry {
   ws: WebSocket;
@@ -16,13 +17,35 @@ export function setupWebSocketServer(server: Server) {
   // and presence broadcasts to everyone else viewing the same document.
   // In a multi-instance deployment this Set would be replaced by a
   // Redis pub/sub channel keyed by documentId (see Phase: Scaling).
-  registerBroadcaster((self, documentId, data) => {
+  registerBroadcaster((self: WebSocket | null, documentId, data) => {
     for (const entry of clients) {
       if (entry.ws !== self && entry.documentId === documentId && entry.ws.readyState === WebSocket.OPEN) {
         entry.ws.send(data);
       }
     }
   });
+
+  // Belt-and-suspenders cleanup: a normal disconnect already removes presence
+  // via the "close" handler below, but an ungraceful one (closed laptop lid,
+  // network drop, tab killed by the OS) never fires "close" on the server.
+  // Without this sweep those entries — and the "N users with the same name"
+  // symptom they cause — would sit in presenceManager forever.
+  const presenceSweepInterval = setInterval(() => {
+    for (const documentId of presenceManager.listDocumentIds()) {
+      const before = presenceManager.list(documentId).length;
+      presenceManager.pruneStale(documentId);
+      const after = presenceManager.list(documentId).length;
+      if (after !== before) {
+        const users = presenceManager.list(documentId);
+        for (const entry of clients) {
+          if (entry.documentId === documentId && entry.ws.readyState === WebSocket.OPEN) {
+            entry.ws.send(JSON.stringify({ type: "presence", users }));
+          }
+        }
+      }
+    }
+  }, 15_000);
+  wss.on("close", () => clearInterval(presenceSweepInterval));
 
   wss.on("connection", (ws, req) => {
     const { query } = url.parse(req.url ?? "", true);

@@ -25,6 +25,10 @@ export async function assertMember(workspaceId: string, userId: string) {
   return membership;
 }
 
+export async function listWorkspaceMemberIds(workspaceId: string) {
+  return repo.listMemberUserIds(workspaceId);
+}
+
 export async function listWorkspaceMembers(workspaceId: string, userId: string) {
   await assertMember(workspaceId, userId);
   const members = await repo.listMembers(workspaceId);

@@ -41,6 +41,10 @@ class PresenceManager {
     return Array.from(this.rooms.get(documentId)?.values() ?? []);
   }
 
+  listDocumentIds(): string[] {
+    return Array.from(this.rooms.keys());
+  }
+
   // Drop stale entries whose client didn't send a heartbeat in time —
   // guards against ungraceful disconnects (closed laptop lid, lost network).
   pruneStale(documentId: string, maxAgeMs = 30_000) {

@@ -20,10 +20,22 @@ export function useCollabSocket(documentId: string | null) {
   const user = useSelector((state: RootState) => state.auth.user);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectAttempt = useRef(0);
+  const reconnectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const activeRef = useRef(true);
+  // Tags each connect() attempt. A closing socket may only schedule a
+  // reconnect if it's still the most recent attempt — this is what a plain
+  // activeRef boolean can't guarantee: React StrictMode's mount→cleanup→
+  // remount can flip activeRef back to true *before* the first socket's
+  // async close event fires, letting a stale socket slip through and
+  // reconnect as a zombie. Bumping the generation on every connect() and
+  // every cleanup closes that race — a superseded socket's close handler
+  // always sees a mismatched generation and bails out.
+  const generationRef = useRef(0);
 
   const connect = useCallback(() => {
-    if (!documentId || !accessToken || !user) return;
+    if (!activeRef.current || !documentId || !accessToken || !user) return;
+    const myGeneration = ++generationRef.current;
 
     dispatch(connectionStatusChanged("connecting"));
 
@@ -66,20 +78,27 @@ export function useCollabSocket(documentId: string | null) {
     };
 
     ws.onclose = () => {
-      dispatch(connectionStatusChanged("disconnected"));
       if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+      // Bail out unless this socket is still the current attempt — an
+      // unmount or a newer connect() already superseded it.
+      if (!activeRef.current || generationRef.current !== myGeneration) return;
 
+      dispatch(connectionStatusChanged("disconnected"));
       const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 15000);
       reconnectAttempt.current += 1;
-      setTimeout(connect, delay);
+      reconnectTimeout.current = setTimeout(connect, delay);
     };
   }, [documentId, accessToken, user, dispatch]);
 
   useEffect(() => {
+    activeRef.current = true;
     connect();
     return () => {
-      socketRef.current?.close();
+      activeRef.current = false;
+      generationRef.current += 1; // invalidate this effect run's in-flight socket
+      if (reconnectTimeout.current) clearTimeout(reconnectTimeout.current);
       if (heartbeatInterval.current) clearInterval(heartbeatInterval.current);
+      socketRef.current?.close();
     };
   }, [connect]);
 

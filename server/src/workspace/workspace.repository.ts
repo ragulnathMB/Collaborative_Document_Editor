@@ -38,6 +38,14 @@ export async function listMembers(workspaceId: string) {
   });
 }
 
+export async function listMemberUserIds(workspaceId: string) {
+  const members = await prisma.workspaceMember.findMany({
+    where: { workspaceId },
+    select: { userId: true },
+  });
+  return members.map((m: { userId: string }) => m.userId);
+}
+
 export async function findUserByEmail(email: string) {
   return prisma.user.findUnique({ where: { email } });
 }

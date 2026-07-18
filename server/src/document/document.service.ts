@@ -1,5 +1,5 @@
 import * as repo from "./document.repository";
-import { assertMember } from "../workspace/workspace.service";
+import { assertMember, listWorkspaceMemberIds } from "../workspace/workspace.service";
 
 export class DocumentAccessError extends Error {}
 
@@ -28,7 +28,8 @@ export async function createNewDocument(
   // assertMember throws WorkspaceAccessError otherwise, which propagates
   // to the controller same as a DocumentAccessError would.
   await assertMember(workspaceId, ownerId);
-  return repo.createDocument(workspaceId, ownerId, title);
+  const memberIds = await listWorkspaceMemberIds(workspaceId);
+  return repo.createDocument(workspaceId, ownerId, title, memberIds);
 }
 
 export async function getDocumentForUser(documentId: string, userId: string) {
