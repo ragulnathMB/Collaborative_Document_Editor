@@ -1,141 +1,289 @@
 # Collaborative Document Editor
 
-A real-time collaborative text editor built from scratch, implementing a
-server-authoritative Operational Transformation (OT) engine — the same
-class of algorithm behind Google Docs' original synchronization model.
+A real-time collaborative text editor built from scratch, implementing a **server-authoritative Operational Transformation (OT) engine**—the same class of synchronization algorithm behind the original Google Docs collaborative editing model.
 
-This project was built to deeply understand distributed systems concepts
-(conflict resolution, consistency, presence) rather than to depend on a
-managed real-time backend (Firebase/Supabase) or an off-the-shelf CRDT
-library. The synchronization logic — transform, apply, session management —
-is fully hand-written.
+This project was built to gain a deep understanding of distributed systems concepts such as **conflict resolution, consistency, synchronization, versioning, and user presence**, rather than relying on managed real-time backends (Firebase/Supabase) or third-party CRDT libraries.
+
+The complete synchronization pipeline—including **operation transformation, conflict resolution, session management, buffering, acknowledgements, and persistence**—is implemented from scratch.
+
+---
 
 ## Features
 
-- JWT-based authentication with access + refresh token rotation
-- Workspace-scoped documents with OWNER / EDITOR / VIEWER permissions
+### Authentication
+
+- JWT-based authentication
+- Access & Refresh token authentication
+- Refresh token rotation
+- Secure password hashing with bcrypt
+
+### Workspaces & Permissions
+
+- Workspace-based document organization
+- OWNER / EDITOR / VIEWER role-based permissions
+- Invite members via email
+- Server-side authorization checks
+
+### Real-Time Collaboration
+
 - Real-time collaborative editing over WebSockets
-- Custom Operational Transformation engine (retain/insert/delete model)
+- Custom Operational Transformation (OT) engine
+- Optimistic local editing
+- Pending and queued operation buffering
+- Acknowledgement-based synchronization
+- Automatic conflict resolution
 - Live cursor presence with per-user colors
-- Optimistic local edits with pending/queued operation buffering
-- Debounced autosave with periodic version snapshots for history/recovery
-- Reconnect logic with exponential backoff
+
+### Reliability
+
+- Automatic reconnect with exponential backoff
+- Debounced autosave
+- Periodic version snapshots
+- Crash recovery through persisted snapshots
+
+---
 
 ## Architecture
-Browser A                          Browser B
-|                                  |
-|  WebSocket (/ws)                 |  WebSocket (/ws)
-v                                  v
-Collaboration Server (Node.js)
-+------------------------------------+
-|  wsServer -> wsHandlers             |
-|  SessionManager -> DocumentSession   |
-|  OT engine (transform/apply)          |
-|  PresenceManager                      |
-+------------------------------------+
-|                  |
-v                  v
-PostgreSQL          (in-memory
-(Prisma: users,        session state,
-documents,            evicted after
-permissions,          30s idle)
-snapshots)
 
-**How a keystroke flows:**
-1. Client generates an `Operation` (diff of old vs new text) tagged with its
-   `baseVersion` (last version it has seen).
-2. Server's `DocumentSession` transforms the incoming op against any ops
-   applied concurrently since that `baseVersion`, guaranteeing convergence.
-3. Transformed op is applied to the authoritative in-memory copy, version
-   incremented, and broadcast to every other connected client in that
-   document's room.
-4. Originating client gets an `ack`; other clients get the transformed
-   `operation` message and apply it locally.
-5. Content + version are persisted to Postgres on a 2s debounce, with a
-   snapshot row written every 20 versions for recovery/history.
+```text
+                 Browser A                     Browser B
+                     │                             │
+             WebSocket (/ws)              WebSocket (/ws)
+                     │                             │
+                     └──────────────┬──────────────┘
+                                    │
+                                    ▼
+                  ┌─────────────────────────────────┐
+                  │     Collaboration Server         │
+                  │            (Node.js)             │
+                  │                                 │
+                  │  • WebSocket Server             │
+                  │  • Session Manager              │
+                  │  • Operational Transformation   │
+                  │  • Presence Manager             │
+                  └───────────────┬─────────────────┘
+                                  │
+               ┌──────────────────┴──────────────────┐
+               │                                     │
+               ▼                                     ▼
+        PostgreSQL                        In-memory Session State
+        (Prisma ORM)                      Active Documents
+                                          Connected Clients
+                                          Pending Operations
+                                          Idle Session Eviction
+```
+
+The collaboration server maintains the **authoritative document state**, performs Operational Transformation, broadcasts updates, manages presence, and periodically persists document data to PostgreSQL.
+
+---
+
+## Synchronization Flow
+
+When a user types:
+
+1. The client generates an **Operation** (retain / insert / delete) representing the edit.
+2. The operation is tagged with the client's current `baseVersion`.
+3. The server receives the operation and transforms it against any operations applied since that version.
+4. The transformed operation is applied to the authoritative in-memory document.
+5. The document version is incremented.
+6. The server:
+   - broadcasts the transformed operation to all other connected clients.
+   - sends an acknowledgement to the originating client.
+7. All clients converge to the same document state.
+8. The updated document is persisted to PostgreSQL after a **2-second debounce**, with a snapshot written every **20 versions**.
+
+---
 
 ## Tech Stack
 
-**Client:** React, TypeScript, Redux Toolkit, React Router, TailwindCSS, Vite
-**Server:** Node.js, TypeScript, Express, `ws` (WebSocket), Prisma, PostgreSQL
-**Auth:** JWT (access + refresh tokens), bcrypt password hashing
+### Frontend
 
-Deliberately excluded: Redis (single-instance session manager for now — the
-`SessionManager`/`broadcastToRoom` seam is where Redis pub/sub would plug in
-for horizontal scaling), Lexical/ProseMirror (flat-text `<textarea>` keeps
-focus on OT mechanics rather than rich-text DOM complexity), Firebase/Supabase
-(the whole point was implementing sync ourselves).
+- React
+- TypeScript
+- Redux Toolkit
+- React Router
+- Tailwind CSS
+- Vite
+
+### Backend
+
+- Node.js
+- Express
+- TypeScript
+- WebSocket (`ws`)
+- Prisma ORM
+- PostgreSQL
+
+### Authentication
+
+- JWT
+- Refresh Tokens
+- bcrypt
+
+---
+
+## Design Decisions
+
+This project intentionally avoids several common technologies to focus on implementing the synchronization layer from first principles.
+
+### Redis
+
+Not used.
+
+The application currently runs as a single server instance. The abstraction between `SessionManager` and `broadcastToRoom()` is intentionally designed so Redis Pub/Sub can later be introduced for horizontal scaling.
+
+### Firebase / Supabase
+
+Not used.
+
+The goal of this project is to build the synchronization layer manually instead of relying on managed real-time infrastructure.
+
+### CRDT Libraries
+
+Not used.
+
+The Operational Transformation engine—including transformation, application, acknowledgements, buffering, and conflict resolution—is fully hand-written.
+
+### Rich Text Editors
+
+Libraries such as Lexical and ProseMirror are intentionally excluded.
+
+Using a simple `<textarea>` keeps the focus on synchronization algorithms rather than rich-text DOM manipulation.
+
+---
 
 ## Project Structure
+
+```text
 collab-editor/
-├── client/    # React + Redux Toolkit frontend
-├── server/    # Express + WebSocket + Prisma backend
-├── shared/    # Types shared conceptually between client/server
+├── client/                  # React frontend
+├── server/                  # Express + WebSocket backend
+├── shared/                  # Shared types/interfaces
 └── docker-compose.yml
+```
 
-See in-code comments in `server/src/collaboration/` and
-`client/src/features/editor/ot.ts` for the OT algorithm details.
+Core synchronization logic:
 
-## Setup
+```text
+server/src/collaboration/
+client/src/features/editor/ot.ts
+```
+
+---
+
+## Getting Started
 
 ### 1. Start PostgreSQL
+
 ```bash
 docker-compose up -d
 ```
 
-### 2. Server
+### 2. Start the Server
+
 ```bash
 cd server
+
 npm install
+
 cp .env.example .env
+
 npx prisma migrate dev --name init
+
 npm run dev
 ```
-Server runs on `http://localhost:4000`.
 
-### 3. Client
+Server runs at:
+
+```text
+http://localhost:4000
+```
+
+### 3. Start the Client
+
 ```bash
 cd client
+
 npm install
+
 npm run dev
 ```
-Client runs on `http://localhost:5173`.
 
-### 4. Create a workspace
+Client runs at:
 
-Register/sign in, then visit `/workspaces` (the default landing page after
-login). Create a workspace from there — you're added as its `OWNER`
-automatically — then open it to start creating documents. As the owner you
-can invite other registered users into the workspace by email from the same
-page; invited users get `MEMBER` access and can create/edit documents inside
-it once they sign in.
+```text
+http://localhost:5173
+```
 
-## Features (workspace UI)
+---
 
-- `POST /api/workspaces` / `GET /api/workspaces` — create and list the
-  current user's workspaces (`server/src/workspace/`)
-- `GET /api/workspaces/:id/members` / `POST /api/workspaces/:id/invite` —
-  list members and invite an existing user by email (owner-only)
-- Document creation now checks workspace membership server-side
-  (`assertMember` in `workspace.service.ts`) instead of trusting any
-  `workspaceId` sent by the client
-- Client: `/workspaces` (list + create + invite) and
-  `/workspaces/:workspaceId/documents` (documents scoped to that workspace)
+## Creating a Workspace
 
-## Known Gaps / Next Steps
+1. Register an account.
+2. Sign in.
+3. Navigate to `/workspaces`.
+4. Create a workspace.
+5. You are automatically assigned the **OWNER** role.
+6. Invite registered users by email.
+7. Members can create and edit documents according to their assigned permissions.
 
-- No workspace deletion, renaming, or member removal yet — only
-  create/list/invite are implemented.
-- Single-instance only: `SessionManager` and the client broadcast set live
-  in one process's memory. Scaling to multiple server instances requires
-  replacing the in-memory `Set<RoomEntry>` broadcast in `wsServer.ts` with
-  Redis pub/sub keyed by `documentId`.
-- `diffToOperation` uses a common-prefix/suffix diff, which is correct for
-  typed/pasted edits but not a full Myers diff — fine for a `<textarea>`,
-  would need revisiting for a rich-text tree editor.
-- No automated test suite yet (Vitest/Supertest/Playwright were scoped in
-  planning but not implemented in this pass).
+---
+
+## API Overview
+
+### Workspaces
+
+```http
+POST /api/workspaces
+GET  /api/workspaces
+```
+
+Create and list workspaces.
+
+### Members
+
+```http
+GET  /api/workspaces/:id/members
+POST /api/workspaces/:id/invite
+```
+
+List workspace members and invite registered users.
+
+### Authorization
+
+Document creation and editing are protected by server-side membership validation using `assertMember()` in `workspace.service.ts`, ensuring clients cannot spoof workspace IDs.
+
+---
+
+## Current Limitations
+
+- Workspace rename is not implemented.
+- Workspace deletion is not implemented.
+- Member removal is not implemented.
+- Single-server deployment only.
+- Redis Pub/Sub is required for horizontal scaling.
+- `diffToOperation()` uses a common prefix/suffix diff rather than the Myers diff algorithm.
+- No automated test suite (Vitest, Supertest, Playwright) has been implemented.
+
+---
+
+## Future Improvements
+
+- Redis-based distributed collaboration
+- Rich text editing
+- Document version history viewer
+- Restore previous document versions
+- Automated testing
+- Improved presence indicators
+- Cursor selections
+- Inline comments
+- Offline editing
+- Shareable document links
+
+---
 
 ## License
 
-MIT — educational project, not a commercial product.
+MIT License
+
+This project is intended for educational purposes to demonstrate the implementation of a collaborative editor using a custom Operational Transformation engine. It is not intended for production use without additional scalability, testing, and security enhancements.
